@@ -17,6 +17,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.Signature;
+import android.support.annotation.Nullable;
 import android.util.Log;
 
 import com.ibm.mobilefirstplatform.clientsdk.android.analytics.internal.BMSAnalytics;
@@ -39,8 +40,6 @@ import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
-import java.text.SimpleDateFormat;
-import java.util.TimeZone;
 import java.util.WeakHashMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
@@ -156,6 +155,10 @@ public final class LogPersister {
     /**
      * @exclude
      */
+    public static final String SHARED_PREF_KEY_installUncaughtExceptionHandler = "installUncaughtExceptionHandler";
+    /**
+     * @exclude
+     */
     public static final String SHARED_PREF_KEY_level = "level";
 
     // when configuration is set from the server in production, these keys take precedence:
@@ -176,6 +179,10 @@ public final class LogPersister {
     /**
      * @exclude
      */
+    public static final boolean DEFAULT_installUncaughtExceptionHandler = true;
+    /**
+     * @exclude
+     */
     public static final boolean DEFAULT_analyticsCapture = true; // analytics is enabled by default
     protected static final int DEFAULT_logFileMaxSize = 100000;  // bytes
 
@@ -192,10 +199,9 @@ public final class LogPersister {
     // size when we stop accumulating data in the file:
     private static Integer logFileMaxSize = null;  // bytes
     private static Logger.LEVEL level = null;
+    private static Boolean installUncaughtExceptionHandler = null;
     // we keep a global java.util.logging.Handler to capture third-party stuff:
     private static JULHandler julHandler = new JULHandler();
-    // don't set up the static UncaughtExceptionHandler until after we have a context
-    private static UncaughtExceptionHandler uncaughtExceptionHandler = null;
     // Track instances so we give back the same one for the same logger name passed to getInstance method.
     // We use a WeakHashMap because some instances in this map may go out of scope
     // very soon after instantiation, thus no reason to keep a strong reference, and let
@@ -240,25 +246,36 @@ public final class LogPersister {
     static private FileLoggerInterface fileLoggerInstance;
 
     // log application crash stack traces.  This handler is registered after we have the context object in Logger.setContext(Context)
-    private static class UncaughtExceptionHandler implements Thread.UncaughtExceptionHandler
-    {
-        private final Thread.UncaughtExceptionHandler defaultUEH = Thread.getDefaultUncaughtExceptionHandler();
+    private static class UncaughtExceptionHandler implements Thread.UncaughtExceptionHandler {
+
+        @Nullable
+        private Thread.UncaughtExceptionHandler original;
+
+        public UncaughtExceptionHandler(@Nullable Thread.UncaughtExceptionHandler original) {
+            this.original = original;
+        }
+
+        @Nullable
+        public Thread.UncaughtExceptionHandler getOriginal() {
+            return original;
+        }
 
         @Override
-        public final void uncaughtException(final Thread t, final Throwable e)
-        {
+        public final void uncaughtException(final Thread t, final Throwable e) {
             // place a marker that indicates for next run that a crash was caught:
             if (null != context) {
-                context.getSharedPreferences (SHARED_PREF_KEY, Context.MODE_PRIVATE).edit ().putBoolean (SHARED_PREF_KEY_CRASH_DETECTED, true).commit();
+                context.getSharedPreferences(SHARED_PREF_KEY, Context.MODE_PRIVATE).edit().putBoolean(SHARED_PREF_KEY_CRASH_DETECTED, true).commit();
             }
             // log it to file:
             Logger logger = Logger.getLogger(this.getClass().getName());
-            logger.fatal ("Uncaught Exception", e);
+            logger.fatal("Uncaught Exception", e);
 
             MFPAnalyticsActivityLifecycleListener.getInstance().logAppCrash();
 
             // allow it to pass through:
-            defaultUEH.uncaughtException(t, e);
+            if (original != null) {
+                original.uncaughtException(t, e);
+            }
         }
     }
 
@@ -273,7 +290,7 @@ public final class LogPersister {
         analyticsCapture = null;
         logFileMaxSize = null;
         level = null;
-        uncaughtExceptionHandler = null;
+        installUncaughtExceptionHandler = null;
         fileLoggerInstance = null;
         LogManager.getLogManager().getLogger("").removeHandler(julHandler);
     }
@@ -323,8 +340,11 @@ public final class LogPersister {
                 setCaptureSync(prefs.getBoolean (SHARED_PREF_KEY_logPersistence, DEFAULT_capture));
             }
 
-            uncaughtExceptionHandler = new UncaughtExceptionHandler ();
-            Thread.setDefaultUncaughtExceptionHandler (uncaughtExceptionHandler);
+            if (null != installUncaughtExceptionHandler) {
+                installUncaughtExceptionHandler(installUncaughtExceptionHandler);
+            } else {
+                installUncaughtExceptionHandler(prefs.getBoolean(SHARED_PREF_KEY_installUncaughtExceptionHandler, DEFAULT_installUncaughtExceptionHandler));
+            }
         }
     }
 
@@ -410,6 +430,25 @@ public final class LogPersister {
                 }
             }
         });
+    }
+
+    static synchronized public void installUncaughtExceptionHandler(final boolean install) {
+        LogPersister.installUncaughtExceptionHandler = install;
+        // The uncaught exception handler needs the context to operate properly, so
+        // we postpone its configuration until this is set
+        if (null == context) return;
+
+        SharedPreferences prefs = context.getSharedPreferences(SHARED_PREF_KEY, Context.MODE_PRIVATE);
+        prefs.edit().putBoolean(SHARED_PREF_KEY_installUncaughtExceptionHandler, LogPersister.capture).apply();
+
+        Thread.UncaughtExceptionHandler current = Thread.getDefaultUncaughtExceptionHandler();
+        if (install && !(current instanceof UncaughtExceptionHandler)) {
+            UncaughtExceptionHandler wrapped = new UncaughtExceptionHandler(current);
+            Thread.setDefaultUncaughtExceptionHandler(wrapped);
+        } else if (!install && (current instanceof UncaughtExceptionHandler)) {
+            Thread.UncaughtExceptionHandler original = ((UncaughtExceptionHandler) current).getOriginal();
+            Thread.setDefaultUncaughtExceptionHandler(original);
+        }
     }
 
     static synchronized private void setCaptureSync(final boolean capture) {
