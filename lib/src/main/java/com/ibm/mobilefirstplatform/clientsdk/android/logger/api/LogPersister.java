@@ -155,10 +155,6 @@ public final class LogPersister {
     /**
      * @exclude
      */
-    public static final String SHARED_PREF_KEY_installUncaughtExceptionHandler = "installUncaughtExceptionHandler";
-    /**
-     * @exclude
-     */
     public static final String SHARED_PREF_KEY_level = "level";
 
     // when configuration is set from the server in production, these keys take precedence:
@@ -179,10 +175,6 @@ public final class LogPersister {
     /**
      * @exclude
      */
-    public static final boolean DEFAULT_installUncaughtExceptionHandler = true;
-    /**
-     * @exclude
-     */
     public static final boolean DEFAULT_analyticsCapture = true; // analytics is enabled by default
     protected static final int DEFAULT_logFileMaxSize = 100000;  // bytes
 
@@ -199,7 +191,6 @@ public final class LogPersister {
     // size when we stop accumulating data in the file:
     private static Integer logFileMaxSize = null;  // bytes
     private static Logger.LEVEL level = null;
-    private static Boolean installUncaughtExceptionHandler = null;
     // we keep a global java.util.logging.Handler to capture third-party stuff:
     private static JULHandler julHandler = new JULHandler();
     // Track instances so we give back the same one for the same logger name passed to getInstance method.
@@ -290,8 +281,8 @@ public final class LogPersister {
         analyticsCapture = null;
         logFileMaxSize = null;
         level = null;
-        installUncaughtExceptionHandler = null;
         fileLoggerInstance = null;
+        installUncaughtExceptionHandler(false);
         LogManager.getLogManager().getLogger("").removeHandler(julHandler);
     }
 
@@ -340,11 +331,7 @@ public final class LogPersister {
                 setCaptureSync(prefs.getBoolean (SHARED_PREF_KEY_logPersistence, DEFAULT_capture));
             }
 
-            if (null != installUncaughtExceptionHandler) {
-                installUncaughtExceptionHandler(installUncaughtExceptionHandler);
-            } else {
-                installUncaughtExceptionHandler(prefs.getBoolean(SHARED_PREF_KEY_installUncaughtExceptionHandler, DEFAULT_installUncaughtExceptionHandler));
-            }
+            installUncaughtExceptionHandler(true);
         }
     }
 
@@ -432,14 +419,18 @@ public final class LogPersister {
         });
     }
 
-    static synchronized public void installUncaughtExceptionHandler(final boolean install) {
-        LogPersister.installUncaughtExceptionHandler = install;
+    /**
+     * Disables the internal uncaught exception handler, so uncaught exceptions are not reported
+     * to the Analytics backend.
+     */
+    static public void disableUncaughtExceptionHandler() {
+        installUncaughtExceptionHandler(false);
+    }
+
+    static synchronized private void installUncaughtExceptionHandler(final boolean install) {
         // The uncaught exception handler needs the context to operate properly, so
         // we postpone its configuration until this is set
         if (null == context) return;
-
-        SharedPreferences prefs = context.getSharedPreferences(SHARED_PREF_KEY, Context.MODE_PRIVATE);
-        prefs.edit().putBoolean(SHARED_PREF_KEY_installUncaughtExceptionHandler, LogPersister.capture).apply();
 
         Thread.UncaughtExceptionHandler current = Thread.getDefaultUncaughtExceptionHandler();
         if (install && !(current instanceof UncaughtExceptionHandler)) {
